@@ -22,7 +22,7 @@ package io.ballerina.stdlib.xmldata.readers;
  *
  * @since 2.5.0
  */
-public enum XMLChunkKind {
+public enum XmlChunkKind {
 
     /**
      * Represents XML Start Element.

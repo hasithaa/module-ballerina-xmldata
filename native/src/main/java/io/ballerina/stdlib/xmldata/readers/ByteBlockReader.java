@@ -18,7 +18,6 @@
 package io.ballerina.stdlib.xmldata.readers;
 
 import io.ballerina.runtime.api.Environment;
-import io.ballerina.runtime.api.Future;
 import io.ballerina.runtime.api.async.Callback;
 import io.ballerina.runtime.api.async.StrandMetadata;
 import io.ballerina.runtime.api.types.MethodType;
@@ -27,7 +26,6 @@ import io.ballerina.runtime.api.values.*;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -41,7 +39,6 @@ public class ByteBlockReader implements Closeable {
 
     private final BObject iterator;
     private final Environment env;
-    private final Future future;
     private final String nextMethodName;
     private final Type returnType;
     private final String strandName;
@@ -51,10 +48,9 @@ public class ByteBlockReader implements Closeable {
     List<byte[]> chunks = new ArrayList<>();
 
 
-    public ByteBlockReader(Environment env, BObject iterator, MethodType nextMethod, Future future) {
+    public ByteBlockReader(Environment env, BObject iterator, MethodType nextMethod) {
         this.env = env;
         this.iterator = iterator;
-        this.future = future;
         this.nextMethodName = nextMethod.getName();
         this.returnType = nextMethod.getReturnType();
         this.strandName = env.getStrandName().orElse("");
@@ -62,14 +58,14 @@ public class ByteBlockReader implements Closeable {
         this.properties = Map.of();
     }
 
-    public void readAllBlocksAncConsumer(Consumer<InputStream> futureResultConsumer) throws IOException {
+    public void readAllBlocksAncConsumer(Consumer<Object> futureResultConsumer) throws IOException {
         if (iterator == null || nextMethodName == null || returnType == null) {
             throw new IOException("Invalid byte[] stream");
         }
         scheduleNextRead(futureResultConsumer);
     }
 
-    private void scheduleNextRead(Consumer<InputStream> futureResultConsumer) {
+    private void scheduleNextRead(Consumer<Object> futureResultConsumer) {
         Callback callback = new Callback() {
             @Override
             public void notifySuccess(Object o) {
@@ -77,8 +73,8 @@ public class ByteBlockReader implements Closeable {
                     futureResultConsumer.accept(new ByteBlockSteam(chunks));
                 }
                 if (o instanceof BMap) {
-                    BMap valueRecord = (BMap) o;
-                    final BString value = (BString) Arrays.stream(valueRecord.getKeys()).findFirst().get();
+                    BMap<BString, Object> valueRecord = (BMap<BString, Object>) o;
+                    final BString value = Arrays.stream(valueRecord.getKeys()).findFirst().get();
                     final BArray arrayValue = valueRecord.getArrayValue(value);
                     chunks.add(arrayValue.getByteArray());
                 }
@@ -87,7 +83,7 @@ public class ByteBlockReader implements Closeable {
 
             @Override
             public void notifyFailure(BError bError) {
-                future.complete(bError);
+                futureResultConsumer.accept(bError);
             }
         };
         env.getRuntime().invokeMethodAsyncSequentially(iterator, nextMethodName, strandName, metadata, callback, properties,

@@ -27,25 +27,25 @@ import javax.xml.namespace.QName;
  *
  * @since 2.0.0
  */
-public class XMLChunk {
+public class XmlChunk {
 
-    final XMLChunkKind kind;
+    final XmlChunkKind kind;
 
-    private XMLChunk(XMLChunkKind kind) {
+    private XmlChunk(XmlChunkKind kind) {
         this.kind = kind;
     }
 
-    public XMLChunkKind getKind() {
+    public XmlChunkKind getKind() {
         return kind;
     }
 
-    public static class XMLStartElement extends XMLChunk {
+    public static class XmlStartElement extends XmlChunk {
 
         QName qName;
         Map<String, String> attributesMap = new HashMap<>();
 
-        public XMLStartElement(QName elemName) {
-            super(XMLChunkKind.START_ELEMENT);
+        public XmlStartElement(QName elemName) {
+            super(XmlChunkKind.START_ELEMENT);
             this.qName = elemName;
         }
 
@@ -59,53 +59,53 @@ public class XMLChunk {
 
     }
 
-    public static class XMLEndElement extends XMLChunk {
+    public static class XmlEndElement extends XmlChunk {
 
         QName qName;
 
-        public XMLEndElement(QName qName) {
-            super(XMLChunkKind.END_ELEMENT);
+        public XmlEndElement(QName qName) {
+            super(XmlChunkKind.END_ELEMENT);
             this.qName = qName;
         }
     }
 
-    public static class XMLEndDocument extends XMLChunk {
+    public static class XmlEndDocument extends XmlChunk {
 
-        public XMLEndDocument() {
-            super(XMLChunkKind.END_DOCUMENT);
+        public XmlEndDocument() {
+            super(XmlChunkKind.END_DOCUMENT);
         }
     }
 
-    public static class XMLComment extends XMLChunk {
+    public static class XmlComment extends XmlChunk {
 
         private final String comment;
 
-        public XMLComment(String comment) {
-            super(XMLChunkKind.COMMENT);
+        public XmlComment(String comment) {
+            super(XmlChunkKind.COMMENT);
             this.comment = comment;
         }
     }
 
-    public static class XMLText extends XMLChunk {
+    public static class XmlText extends XmlChunk {
 
         private final String text;
         private final boolean possibleWhitespace;
 
-        public XMLText(String text) {
-            super(XMLChunkKind.TEXT);
+        public XmlText(String text) {
+            super(XmlChunkKind.TEXT);
             this.text = text;
             this.possibleWhitespace = text.isBlank();
         }
     }
 
-    public static class XMLProcessingInstruction extends XMLChunk {
+    public static class XmlProcessingInstruction extends XmlChunk {
 
 
         private final String piTarget;
         private final String piData;
 
-        public XMLProcessingInstruction(String piTarget, String piData) {
-            super(XMLChunkKind.PROCESSING_INSTRUCTION);
+        public XmlProcessingInstruction(String piTarget, String piData) {
+            super(XmlChunkKind.PROCESSING_INSTRUCTION);
             this.piTarget = piTarget;
             this.piData = piData;
         }
