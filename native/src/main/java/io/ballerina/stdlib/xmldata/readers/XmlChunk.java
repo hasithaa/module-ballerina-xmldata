@@ -41,8 +41,8 @@ public class XmlChunk {
 
     public static class XmlStartElement extends XmlChunk {
 
-        QName qName;
-        Map<String, String> attributesMap = new HashMap<>();
+        final QName qName;
+        final Map<String, String> attributesMap = new HashMap<>();
 
         public XmlStartElement(QName elemName) {
             super(XmlChunkKind.START_ELEMENT);
@@ -53,32 +53,11 @@ public class XmlChunk {
             attributesMap.put(key, attrValue);
         }
 
-        public void addAttributes(Map<String, String> attributesMap) {
-            this.attributesMap.putAll(attributesMap);
-        }
-
-    }
-
-    public static class XmlEndElement extends XmlChunk {
-
-        QName qName;
-
-        public XmlEndElement(QName qName) {
-            super(XmlChunkKind.END_ELEMENT);
-            this.qName = qName;
-        }
-    }
-
-    public static class XmlEndDocument extends XmlChunk {
-
-        public XmlEndDocument() {
-            super(XmlChunkKind.END_DOCUMENT);
-        }
     }
 
     public static class XmlComment extends XmlChunk {
 
-        private final String comment;
+        final String comment;
 
         public XmlComment(String comment) {
             super(XmlChunkKind.COMMENT);
@@ -88,8 +67,8 @@ public class XmlChunk {
 
     public static class XmlText extends XmlChunk {
 
-        private final String text;
-        private final boolean possibleWhitespace;
+        final String text;
+        final boolean possibleWhitespace;
 
         public XmlText(String text) {
             super(XmlChunkKind.TEXT);
@@ -100,9 +79,8 @@ public class XmlChunk {
 
     public static class XmlProcessingInstruction extends XmlChunk {
 
-
-        private final String piTarget;
-        private final String piData;
+        final String piTarget;
+        final String piData;
 
         public XmlProcessingInstruction(String piTarget, String piData) {
             super(XmlChunkKind.PROCESSING_INSTRUCTION);

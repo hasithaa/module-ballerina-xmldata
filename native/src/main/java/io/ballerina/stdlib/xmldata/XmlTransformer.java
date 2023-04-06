@@ -70,10 +70,8 @@ public class XmlTransformer {
         final Type describingType = typedesc.getDescribingType();
 
         // Supports only map, record. Array and JSON is not supported from the signature it self.
-        if (describingType.getTag() != TypeTags.RECORD_TYPE_TAG
-                && describingType.getTag() != TypeTags.MAP_TAG) {
-            return ErrorCreator.createError(
-                    StringUtils.fromString("Invalid type descriptor. Expected record or map"));
+        if (describingType.getTag() != TypeTags.RECORD_TYPE_TAG && describingType.getTag() != TypeTags.MAP_TAG) {
+            return ErrorCreator.createError(StringUtils.fromString("Invalid type descriptor. Expected record or map"));
         }
 
         if (source instanceof BArray) {
@@ -93,8 +91,7 @@ public class XmlTransformer {
     public Object transformFromByteStream(BStream stream, BTypedesc typedesc) {
         final BObject iteratorObj = stream.getIteratorObj();
         Future future = env.markAsync();
-        try (ByteBlockReader byteBlockSteam =
-                     new ByteBlockReader(env, iteratorObj, resolveNextMethod(iteratorObj))) {
+        try (ByteBlockReader byteBlockSteam = new ByteBlockReader(env, iteratorObj, resolveNextMethod(iteratorObj))) {
             Transformer<Object> transformer = new Transformer<>(future, typedesc);
             byteBlockSteam.readAllBlocksAncConsumer(transformer);
         } catch (Exception e) {

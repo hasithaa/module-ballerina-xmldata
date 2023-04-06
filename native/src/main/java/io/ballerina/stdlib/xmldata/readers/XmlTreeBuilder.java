@@ -22,6 +22,7 @@ import io.ballerina.runtime.api.creators.ErrorCreator;
 import io.ballerina.runtime.api.creators.ValueCreator;
 import io.ballerina.runtime.api.types.*;
 import io.ballerina.runtime.api.utils.StringUtils;
+import io.ballerina.runtime.api.utils.TypeUtils;
 import io.ballerina.runtime.api.values.BError;
 import io.ballerina.runtime.api.values.BTypedesc;
 
@@ -40,9 +41,8 @@ import static javax.xml.stream.XMLStreamConstants.DTD;
 import static javax.xml.stream.XMLStreamConstants.END_DOCUMENT;
 import static javax.xml.stream.XMLStreamConstants.END_ELEMENT;
 import static javax.xml.stream.XMLStreamConstants.PROCESSING_INSTRUCTION;
-import static javax.xml.stream.XMLStreamConstants.SPACE;
-import static javax.xml.stream.XMLStreamConstants.START_DOCUMENT;
 import static javax.xml.stream.XMLStreamConstants.START_ELEMENT;
+import static org.ballerinalang.langlib.integer.FromString.*;
 
 /**
  * TODO: Fix me.
@@ -55,10 +55,10 @@ public class XmlTreeBuilder {
 
     private static final XMLInputFactory xmlInputFactory;
 
-    private Stack<XmlChunk> chunks = new Stack<>();
-    private Stack<XmlChunk.XmlStartElement> startElements = new Stack<>();
-    private Stack<Type> types = new Stack<>();
-    private Deque<XmlChunk> siblings = new ArrayDeque<>();
+    private final Stack<XmlChunk> chunks = new Stack<>();
+    private final Stack<XmlChunk.XmlStartElement> startElements = new Stack<>();
+    private final Stack<TypeMapping> types = new Stack<>();
+    private final Stack<Map<String, Object>> siblings = new Stack<>();
     private BTypedesc typedesc = null;
 
     static {
@@ -71,24 +71,6 @@ public class XmlTreeBuilder {
 
     public XmlTreeBuilder(InputStream inputStream) {
         this.inputStream = inputStream;
-    }
-
-    private static Object convertBasicType(String value, Type type) throws RuntimeException {
-        switch (type.getTag()) {
-            case TypeTags.INT_TAG:
-            case TypeTags.BYTE_TAG:
-                return Long.parseLong(value);
-            case TypeTags.FLOAT_TAG:
-                return Double.parseDouble(value);
-            case TypeTags.DECIMAL_TAG:
-                return ValueCreator.createDecimalValue(value);
-            case TypeTags.STRING_TAG:
-                return StringUtils.fromString(value);
-            case TypeTags.BOOLEAN_TAG:
-                return Boolean.parseBoolean(value);
-            default:
-                throw new RuntimeException("Unsupported type: " + type.getName());
-        }
     }
 
     public Object readAndTransform(BTypedesc typedesc) {
@@ -106,37 +88,35 @@ public class XmlTreeBuilder {
         this.startElements.empty();
         this.types.empty();
         this.typedesc = typedesc;
-        Optional<BError> error = Optional.empty();
+        Optional<BError> error;
         try {
             while (xmlStreamReader.hasNext()) {
                 int next = xmlStreamReader.next();
                 switch (next) {
                     case START_ELEMENT:
-                        error = createStartElement(xmlStreamReader);
+                        error = handleStartElement(xmlStreamReader);
                         if (error.isPresent()) {
                             return error.get();
                         }
                         break;
                     case END_ELEMENT:
-                        error = createEndElement();
+                        error = handleEndElement();
                         if (error.isPresent()) {
                             return error.get();
                         }
                         break;
                     case PROCESSING_INSTRUCTION:
-                        createPI(xmlStreamReader);
+                        handleXmlPI(xmlStreamReader);
                         break;
                     case COMMENT:
-                        createComment(xmlStreamReader);
+                        handleXmlComment(xmlStreamReader);
                         break;
                     case CDATA:
                     case CHARACTERS:
-                        createText(xmlStreamReader);
+                        handleXmlText(xmlStreamReader);
                         break;
                     case END_DOCUMENT:
-                    case START_DOCUMENT:
                     case DTD:
-                    case SPACE:
                         break;
                     default:
                         assert false;
@@ -149,44 +129,89 @@ public class XmlTreeBuilder {
         return ValueCreator.createMapValue(typedesc.getDescribingType());
     }
 
-    private Optional<BError> createStartElement(XMLStreamReader xmlStreamReader) {
+    private Optional<BError> handleStartElement(XMLStreamReader xmlStreamReader) {
+        this.siblings.push(new HashMap<>());
         QName elemName = xmlStreamReader.getName();
         XmlChunk.XmlStartElement element = new XmlChunk.XmlStartElement(elemName);
+        startElements.push(element);
+
+        String localPart = elemName.getLocalPart();
+        Optional<BError> error = isRoot() ? checkRootType(localPart) : getNextType(localPart);
+        if (error.isPresent()) {
+            return error;
+        }
 
         // Populate Attributes - Ignore Namespace declarations for now.
         int count = xmlStreamReader.getAttributeCount();
         for (int i = 0; i < count; i++) {
             QName attributeName = xmlStreamReader.getAttributeName(i);
-            element.addAttribute(attributeName.toString(), xmlStreamReader.getAttributeValue(i));
+            String attributeValue = xmlStreamReader.getAttributeValue(i);
+            element.addAttribute(attributeName.toString(), attributeValue);
         }
 
-        Optional<BError> error = isRoot() ? checkRootType() : getNextType(elemName.getLocalPart());
-        if (error.isPresent()) {
-            return error;
-        }
         chunks.push(element);
-        startElements.push(element);
         return Optional.empty();
     }
 
-    private Optional<BError> createEndElement() {
+    private Optional<BError> handleEndElement() {
+        Map<String, Object> values = this.siblings.pop();
+        // TODO: create a new map and add the values to it.
+
         XmlChunk.XmlStartElement startElement = startElements.pop();
-        chunks.push(new XmlChunk.XmlEndElement(startElement.qName));
+        TypeMapping typeMapping = types.pop();
+
+        List<XmlChunk.XmlText> chunkList = new ArrayList<>();
+        // Attempt 1:
+        // If type is value type,  there should be only one text element.
+        // Can't ignore PI here. It is an error.
+        // Comments supported. But if Text is sliced, type is String only
+        // TODO : Ignore Attributes, because we give the priority to the element. Or Should we?
+        if (TypeUtils.isValueType(typeMapping.type)) {
+            while (!chunks.empty()) {
+                XmlChunk chunk = chunks.pop();
+                if (chunk.kind == XmlChunkKind.TEXT) {
+                    chunkList.add((XmlChunk.XmlText) chunk);
+                } else if (chunk.kind == XmlChunkKind.PROCESSING_INSTRUCTION) {
+                    return Optional.of(
+                            createTypeMappingError(typeMapping.type, "XML Processing Instruction not allowed."));
+                }
+                if (chunk == startElement) {
+                    break;
+                }
+            }
+            Object value;
+            if (chunkList.size() > 1) {
+                if (!containStringType(typeMapping.type)) {
+                    return Optional.of(
+                            createTypeMappingError(typeMapping.type, "XML element contains more than one text node."));
+                }
+                value = StringUtils.fromString(chunkList.stream().map(c -> c.text).reduce((a, b) -> a + b).get());
+            } else {
+                String text = chunkList.size() == 1 ? chunkList.get(0).text : "";
+                value = convertSimpleValues(typeMapping.type, text);
+            }
+            this.siblings.peek().put(typeMapping.jsonName, value);
+
+            return Optional.empty();
+        }
+
+        // TODO : This can be compond element which may contains attributes.
+
         return Optional.empty();
     }
 
-    private void createText(XMLStreamReader xmlStreamReader) {
+    private void handleXmlText(XMLStreamReader xmlStreamReader) {
         final String text = xmlStreamReader.getText();
 
         XmlChunk.XmlText xmlText = new XmlChunk.XmlText(text);
         chunks.push(xmlText);
     }
 
-    private void createComment(XMLStreamReader xmlStreamReader) {
+    private void handleXmlComment(XMLStreamReader xmlStreamReader) {
         chunks.push(new XmlChunk.XmlComment(xmlStreamReader.getText()));
     }
 
-    private void createPI(XMLStreamReader xmlStreamReader) {
+    private void handleXmlPI(XMLStreamReader xmlStreamReader) {
         chunks.push(new XmlChunk.XmlProcessingInstruction(xmlStreamReader.getPITarget(), xmlStreamReader.getPIData()));
     }
 
@@ -194,97 +219,167 @@ public class XmlTreeBuilder {
         return this.types.empty();
     }
 
-    private Optional<BError> checkRootType() {
+    private Optional<BError> checkRootType(String localPart) {
         Type describingType = this.typedesc.getDescribingType();
-        if (describingType.getTag() == TypeTags.MAP_TAG
-                || describingType.getTag() == TypeTags.RECORD_TYPE_TAG) {
-            this.types.push(this.typedesc.getDescribingType());
+        if (describingType.getTag() == TypeTags.MAP_TAG || describingType.getTag() == TypeTags.RECORD_TYPE_TAG) {
+            // Root node's JSON name doesn't matter.
+            // No need to read the type annotation here, since this is initiating from the XML root. But fields,
+            // field annotations are needed.
+            TypeMapping typeMapping = new TypeMapping(this.typedesc.getDescribingType(), localPart, "");
+            this.types.push(typeMapping);
             return Optional.empty();
         }
         return Optional.of(ErrorCreator.createError(
                 StringUtils.fromString("Unexpected type: '" + describingType.getName() + "' at //")));
     }
 
-    private Optional<BError> getNextType(String elementName) {
-        Type type = types.peek();
-        Optional<Type> nextType = getNextMemberType(type, elementName);
+    private Optional<BError> getNextType(String localPart) {
+        TypeMapping typeMapping = types.peek();
+        Optional<TypeMapping> nextType = getNextMemberType(typeMapping.type, localPart);
         if (nextType.isPresent()) {
             types.push(nextType.get());
             return Optional.empty();
         }
-        String path = getCurrentPath();
-        String msg;
-        if (type.getName().isEmpty()) {
-            msg = "Unexpected type  at " + path;
-        } else {
-            msg = "Unexpected type '" + type.getName() + "' at " + path;
-        }
-        return Optional.of(ErrorCreator.createError(
-                StringUtils.fromString(msg)));
+        return Optional.of(createTypeMappingError(typeMapping.type));
     }
 
-    private Optional<Type> getNextMemberType(Type currentType, String elementName) {
+    private Optional<TypeMapping> getNextMemberType(Type currentType, String localPart) {
         final int typeTag = currentType.getTag();
+        TypeMapping nextTypeMapping;
         switch (typeTag) {
             case TypeTags.JSON_TAG:
             case TypeTags.ANYDATA_TAG:
             case TypeTags.ANY_TAG:
-                return Optional.of(currentType);
+                // jsonName is same as xml name this case.
+                // TODO : Check attribute name matters here.
+                nextTypeMapping = new TypeMapping(currentType, localPart);
+                return Optional.of(nextTypeMapping);
             case TypeTags.UNION_TAG:
                 for (Type memberType : ((UnionType) currentType).getMemberTypes()) {
-                    Optional<Type> result = getNextMemberType(memberType, elementName);
+                    Optional<TypeMapping> result = getNextMemberType(memberType, localPart);
                     if (result.isPresent()) {
                         return result;  // Take First match
                     }
                 }
+                break;
             case TypeTags.MAP_TAG:
-                return Optional.of(((MapType) currentType).getConstrainedType());
+                // This will make sure, we will reuse the member type, for next iteration.
+                nextTypeMapping = new TypeMapping(((MapType) currentType).getConstrainedType(), localPart);
+                return Optional.of(nextTypeMapping);
             case TypeTags.RECORD_TYPE_TAG:
                 RecordType recordType = (RecordType) currentType;
-                if (recordType.getFields().containsKey(elementName)) {
-                    return Optional.of(recordType.getFields().get(elementName).getFieldType());
+                // TODO : Handle Annotation. First check for annotation, then check for field.
+                // Once we read the annotation, we can set the jsonName(the fieldName) from the annotation attachment.
+                // For now, we are using the localPart as the jsonName.
+                String jsonName = localPart;
+                if (recordType.getFields().containsKey(localPart)) {
+                    nextTypeMapping =
+                            new TypeMapping(recordType.getFields().get(localPart).getFieldType(), localPart, jsonName);
+                    return Optional.of(nextTypeMapping);
                 } else if (!recordType.isSealed()) {
-                    return Optional.of(recordType.getRestFieldType());
+                    nextTypeMapping = new TypeMapping(recordType.getRestFieldType(), null);
+                    return Optional.of(nextTypeMapping);
                 } else {
                     return Optional.empty();
                 }
             case TypeTags.ARRAY_TAG:
                 ArrayType arrayType = (ArrayType) currentType;
-                return Optional.of(arrayType.getElementType());
+                nextTypeMapping = new TypeMapping(arrayType.getElementType(), localPart);
+                return Optional.of(nextTypeMapping);
             default:
                 return Optional.empty();
         }
+        return Optional.empty();
     }
 
-    private String getCurrentPath() {
-        StringBuilder path = new StringBuilder();
+    private BError createTypeMappingError(Type type) {
+        return createTypeMappingError(type, "");
+    }
+
+    private BError createTypeMappingError(Type type, String reason) {
+
+        StringBuilder pathBuilder = new StringBuilder();
         for (XmlChunk.XmlStartElement startElement : startElements) {
-            path.append("/").append(startElement.qName);
+            pathBuilder.append("/").append(startElement.qName);
         }
-        return path.toString();
+
+        String path = pathBuilder.toString();
+        if (path.isEmpty()) {
+            path = "//";
+        }
+        String msg;
+        if (type.getName().isEmpty()) {
+            msg = "Unexpected type mapping `" + type + "' at " + path;
+        } else {
+            msg = "Unexpected type mapping '" + type.getQualifiedName() + "' at " + path;
+        }
+        if (!reason.isEmpty()) {
+            msg = msg + ", " + reason;
+        }
+        return ErrorCreator.createError(StringUtils.fromString(msg));
     }
 
-    private Object handleMapType(MapType mapType) {
-        Type constrainedType = mapType.getConstrainedType();
-        boolean convertSimpleBasicTypes = false;
-        if (constrainedType.getTag() == TypeTags.XML_TAG) {
-            // Not supported.
-            return ErrorCreator.createError(
-                    StringUtils.fromString("Invalid map type descriptor. Expected map of JSON"));
-        } else if (constrainedType.getTag() == TypeTags.JSON_TAG
-                || constrainedType.getTag() == TypeTags.ANY_TAG
-                || constrainedType.getTag() == TypeTags.ANYDATA_TAG) {
-            // AnyData type and Any type considered as JSON.
-            // Additionally, we try to convert simple Basic types much as possible.
-            convertSimpleBasicTypes = true;
-        } else if (constrainedType.getTag() == TypeTags.STRING_TAG) {
-            // All are considered as string.
-            convertSimpleBasicTypes = false;
-        } else {
-            return ErrorCreator.createError(
-                    StringUtils.fromString("Invalid map type descriptor. Expected map of JSON"));
+    /**
+     * Represents XML to JSON mapping attributes based on OpenAPI Specification.
+     */
+    private static class TypeMapping {
+
+        Type type;
+        String name;
+        String jsonName;
+        boolean attribute = false;
+
+        // Note : attribute = false means, this is a text node.
+        // This is required to over-come the limitation with XML element with attributes AND content.
+        // e.g. <element attr1="value1">content</element>
+        // record { string element; @xmldata:Mapping{ } string attr1; }
+        // See this issue. https://github.com/OAI/OpenAPI-Specification/issues/630
+
+        TypeMapping(Type type, String name) {
+            this.type = type;
+            this.name = name;
+            this.jsonName = name;
         }
-        return null;
+
+        TypeMapping(Type type, String name, String jsonName) {
+            this.type = type;
+            this.name = name;
+            this.jsonName = jsonName;
+        }
+    }
+
+    private static Object convertSimpleValues(Type type, String text) {
+        switch (type.getTag()) {
+            case TypeTags.INT_TAG:
+                return fromString(StringUtils.fromString(text));
+            case TypeTags.BOOLEAN_TAG:
+                return org.ballerinalang.langlib.bool.FromString.fromString(StringUtils.fromString(text));
+            case TypeTags.DECIMAL_TAG:
+                return org.ballerinalang.langlib.decimal.FromString.fromString(StringUtils.fromString(text));
+            case TypeTags.FLOAT_TAG:
+                return org.ballerinalang.langlib.floatingpoint.FromString.fromString(StringUtils.fromString(text));
+        }
+        return StringUtils.fromString(text);
+    }
+
+    private static boolean containStringType(Type type) {
+        switch (type.getTag()) {
+            case TypeTags.STRING_TAG:
+            case TypeTags.ANYDATA_TAG:
+            case TypeTags.ANY_TAG:
+            case TypeTags.READONLY_TAG:
+            case TypeTags.JSON_TAG:
+                return true;
+            case TypeTags.UNION_TAG:
+                for (Type memberType : ((UnionType) type).getMemberTypes()) {
+                    if (containStringType(memberType)) {
+                        return true;
+                    }
+                }
+                return false;
+            default:
+                return false;
+        }
     }
 
 }

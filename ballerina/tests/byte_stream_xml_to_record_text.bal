@@ -21,7 +21,7 @@ import ballerina/test;
     groups: ["xmlio-stream"]
 }
 isolated function testStreamReadXML() returns error? {
-    stream<byte[], error?> byteBlockStream = check io:fileReadBlocksAsStream("tests/resources/largeXML.xml");
+    stream<byte[], error?> byteBlockStream = check io:fileReadBlocksAsStream("tests/resources/large-data.xml");
     record{} res2 = check streamReadXmlWithType(byteBlockStream);
     io:println(res2);
 }
@@ -30,8 +30,14 @@ isolated function testStreamReadXML() returns error? {
     groups: ["xmlio"]
 }
 isolated function testByteArrayXML() returns error? {
-    xml x = xml `<root>Hello</root>`;
+    xml x = xml `<book id="0"> <title>SomeBook</title> <author>Some Author</author></book>`;
     byte[] bytes = x.toString().toBytes();
-    map<json> res1 = check streamReadXmlWithType(bytes);
+    Book res1 = check streamReadXmlWithType(bytes);
     io:println(res1);
 }
+
+type Book record {
+    string title;
+    string author;
+    int id;
+};

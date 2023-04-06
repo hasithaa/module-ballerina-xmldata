@@ -39,7 +39,7 @@ public class ByteBlockSteam extends InputStream {
     }
 
     public int read() {
-        if (hasBytesInCurrentChunk()) {;
+        if (hasBytesInCurrentChunk()) {
             return currentChunk[nextChunkIndex++];
         }
         // Need to get a new block from the stream, before reading again.
@@ -58,6 +58,7 @@ public class ByteBlockSteam extends InputStream {
 
     private boolean readNextChunk() {
         if (chunks.size() == 0) {
+            currentChunk = new byte[0];
             return false;
         }
         currentChunk = chunks.remove(0);

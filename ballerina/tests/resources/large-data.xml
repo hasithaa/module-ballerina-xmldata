@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='UTF-8'?>
+
 <root>
     <products xmlns="http://www.example.com/products">
         <product id="1" name="Product 1" xmlns="http://www.example.com/products">

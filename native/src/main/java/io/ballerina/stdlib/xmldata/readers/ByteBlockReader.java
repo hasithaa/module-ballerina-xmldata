@@ -71,6 +71,7 @@ public class ByteBlockReader implements Closeable {
             public void notifySuccess(Object o) {
                 if (o == null) {
                     futureResultConsumer.accept(new ByteBlockSteam(chunks));
+                    return;
                 }
                 if (o instanceof BMap) {
                     BMap<BString, Object> valueRecord = (BMap<BString, Object>) o;
@@ -86,8 +87,13 @@ public class ByteBlockReader implements Closeable {
                 futureResultConsumer.accept(bError);
             }
         };
-        env.getRuntime().invokeMethodAsyncSequentially(iterator, nextMethodName, strandName, metadata, callback, properties,
-                returnType);
+        env.getRuntime().invokeMethodAsyncSequentially(iterator,
+                                                       nextMethodName,
+                                                       strandName,
+                                                       metadata,
+                                                       callback,
+                                                       properties,
+                                                       returnType);
     }
 
     @Override
