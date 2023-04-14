@@ -17,17 +17,20 @@
  */
 package io.ballerina.stdlib.xmldata.readers;
 
+import io.ballerina.runtime.api.PredefinedTypes;
 import io.ballerina.runtime.api.TypeTags;
 import io.ballerina.runtime.api.creators.ErrorCreator;
 import io.ballerina.runtime.api.creators.ValueCreator;
+import io.ballerina.runtime.api.flags.SymbolFlags;
 import io.ballerina.runtime.api.types.*;
 import io.ballerina.runtime.api.utils.StringUtils;
 import io.ballerina.runtime.api.utils.TypeUtils;
-import io.ballerina.runtime.api.values.BError;
-import io.ballerina.runtime.api.values.BTypedesc;
+import io.ballerina.runtime.api.values.*;
 
 import java.io.InputStream;
 import java.util.*;
+import java.util.function.IntFunction;
+import java.util.stream.Collectors;
 
 import javax.xml.namespace.QName;
 import javax.xml.stream.XMLInputFactory;
@@ -54,11 +57,12 @@ import static org.ballerinalang.langlib.integer.FromString.*;
 public class XmlTreeBuilder {
 
     private static final XMLInputFactory xmlInputFactory;
+    public static final String ROOT = "root";
 
     private final Stack<XmlChunk> chunks = new Stack<>();
     private final Stack<XmlChunk.XmlStartElement> startElements = new Stack<>();
     private final Stack<TypeMapping> types = new Stack<>();
-    private final Stack<Map<String, Object>> siblings = new Stack<>();
+    private final Stack<List<Map.Entry<BString, BMapInitialValueEntry>>> siblings = new Stack<>();
     private BTypedesc typedesc = null;
 
     static {
@@ -88,6 +92,8 @@ public class XmlTreeBuilder {
         this.startElements.empty();
         this.types.empty();
         this.typedesc = typedesc;
+        this.siblings.empty();
+        this.siblings.push(new ArrayList<>());
         Optional<BError> error;
         try {
             while (xmlStreamReader.hasNext()) {
@@ -123,14 +129,22 @@ public class XmlTreeBuilder {
                 }
             }
         } catch (Exception e) {
-            return ErrorCreator.createError(
-                    StringUtils.fromString("XMLStreamException: " + e.getMessage()));
+            if (e instanceof BError) {
+                return e;
+            }
+            String reason = e.getMessage() != null ? ", " + e.getMessage() : e.getClass().getName();
+            return ErrorCreator.createError(StringUtils.fromString("XML Parse Error:" + reason));
         }
-        return ValueCreator.createMapValue(typedesc.getDescribingType());
+        List<Map.Entry<BString, BMapInitialValueEntry>> values = this.siblings.pop();
+        BMap<BString, Object> mapValue = ValueCreator.createMapValue(PredefinedTypes.TYPE_MAP, values.stream()
+                                                                                                     .map(Map.Entry::getValue)
+                                                                                                     .toArray(
+                                                                                                             BMapInitialValueEntry[]::new));
+        return mapValue.get(StringUtils.fromString(ROOT));
     }
 
     private Optional<BError> handleStartElement(XMLStreamReader xmlStreamReader) {
-        this.siblings.push(new HashMap<>());
+        this.siblings.push(new ArrayList<>());
         QName elemName = xmlStreamReader.getName();
         XmlChunk.XmlStartElement element = new XmlChunk.XmlStartElement(elemName);
         startElements.push(element);
@@ -154,8 +168,7 @@ public class XmlTreeBuilder {
     }
 
     private Optional<BError> handleEndElement() {
-        Map<String, Object> values = this.siblings.pop();
-        // TODO: create a new map and add the values to it.
+        List<Map.Entry<BString, BMapInitialValueEntry>> values = this.siblings.pop();
 
         XmlChunk.XmlStartElement startElement = startElements.pop();
         TypeMapping typeMapping = types.pop();
@@ -166,6 +179,7 @@ public class XmlTreeBuilder {
         // Can't ignore PI here. It is an error.
         // Comments supported. But if Text is sliced, type is String only
         // TODO : Ignore Attributes, because we give the priority to the element. Or Should we?
+        BString jsonName = typeMapping.jsonName;
         if (TypeUtils.isValueType(typeMapping.type)) {
             while (!chunks.empty()) {
                 XmlChunk chunk = chunks.pop();
@@ -190,13 +204,71 @@ public class XmlTreeBuilder {
                 String text = chunkList.size() == 1 ? chunkList.get(0).text : "";
                 value = convertSimpleValues(typeMapping.type, text);
             }
-            this.siblings.peek().put(typeMapping.jsonName, value);
+            this.siblings.peek()
+                         .add(new AbstractMap.SimpleEntry<>(jsonName,
+                                                            ValueCreator.createKeyFieldEntry(jsonName, value)));
 
             return Optional.empty();
         }
 
-        // TODO : This can be compond element which may contains attributes.
+        // Attempt 2:
+        // If type is a record, then we need to create a map and add the values to it.
+        while (!chunks.empty()) {
+            XmlChunk chunk = chunks.pop();
+            // All other nodes are ignored.
+            if (chunk == startElement) {
+                break;
+            }
+        }
+        startElement.attributesMap.forEach((key, value) -> {
+            BString fieldName = StringUtils.fromString(key);
+            BString fieldValue = StringUtils.fromString(value);
+            // TODO : Change key from Annotation
+            values.add(
+                    new AbstractMap.SimpleEntry<>(fieldName, ValueCreator.createKeyFieldEntry(fieldName, fieldValue)));
+        });
 
+        // Validate given record is mapping to the given xml value.
+        // Check all required fields are present. Otherwise, it is an error.
+        if (typeMapping.type.getTag() == TypeTags.RECORD_TYPE_TAG) {
+            RecordType recordType = (RecordType) typeMapping.type;
+            List<String> missingMappings = new ArrayList<>();
+            for (Field field : recordType.getFields().values()) {
+                long masks = field.getFlags();
+                if (SymbolFlags.isFlagOn(masks, SymbolFlags.REQUIRED)) {
+                    if (values.stream()
+                              .map(Map.Entry::getKey)
+                              .noneMatch(key -> key.getValue().equals(field.getFieldName()))) {
+                        missingMappings.add(field.getFieldName());
+                    }
+                    // Change the type if needed.
+                }
+            }
+            if (!missingMappings.isEmpty()) {
+                return Optional.of(createTypeMappingError(typeMapping.type, "Missing required fields: " +
+                        missingMappings.stream().collect(Collectors.joining(", "))));
+            }
+
+            BMapInitialValueEntry[] keyValues =
+                    values.stream().map(Map.Entry::getValue).toArray(BMapInitialValueEntry[]::new);
+            BMap<BString, Object> recordValue = ValueCreator.createRecordValue(recordType, keyValues);
+            this.siblings.peek()
+                         .add(new AbstractMap.SimpleEntry<>(jsonName,
+                                                            ValueCreator.createKeyFieldEntry(jsonName, recordValue)));
+
+        }
+
+        // Mapping Value
+        if (typeMapping.type.getTag() == TypeTags.MAP_TAG) {
+            MapType mapType = (MapType) typeMapping.type;
+            BMapInitialValueEntry[] keyValues =
+                    values.stream().map(Map.Entry::getValue).toArray(BMapInitialValueEntry[]::new);
+            BMap<BString, Object> mapValue = ValueCreator.createMapValue(mapType, keyValues);
+            this.siblings.peek()
+                         .add(new AbstractMap.SimpleEntry<>(jsonName,
+                                                            ValueCreator.createKeyFieldEntry(jsonName, mapValue)));
+        }
+        // TODO : Handle other types
         return Optional.empty();
     }
 
@@ -225,12 +297,14 @@ public class XmlTreeBuilder {
             // Root node's JSON name doesn't matter.
             // No need to read the type annotation here, since this is initiating from the XML root. But fields,
             // field annotations are needed.
-            TypeMapping typeMapping = new TypeMapping(this.typedesc.getDescribingType(), localPart, "");
+            TypeMapping typeMapping =
+                    new TypeMapping(this.typedesc.getDescribingType(), StringUtils.fromString(localPart),
+                                    StringUtils.fromString(ROOT));
             this.types.push(typeMapping);
             return Optional.empty();
         }
         return Optional.of(ErrorCreator.createError(
-                StringUtils.fromString("Unexpected type: '" + describingType.getName() + "' at //")));
+                StringUtils.fromString("Unexpected type: '" + describingType.getName() + "' at /")));
     }
 
     private Optional<BError> getNextType(String localPart) {
@@ -252,7 +326,7 @@ public class XmlTreeBuilder {
             case TypeTags.ANY_TAG:
                 // jsonName is same as xml name this case.
                 // TODO : Check attribute name matters here.
-                nextTypeMapping = new TypeMapping(currentType, localPart);
+                nextTypeMapping = new TypeMapping(currentType, StringUtils.fromString(localPart));
                 return Optional.of(nextTypeMapping);
             case TypeTags.UNION_TAG:
                 for (Type memberType : ((UnionType) currentType).getMemberTypes()) {
@@ -264,7 +338,8 @@ public class XmlTreeBuilder {
                 break;
             case TypeTags.MAP_TAG:
                 // This will make sure, we will reuse the member type, for next iteration.
-                nextTypeMapping = new TypeMapping(((MapType) currentType).getConstrainedType(), localPart);
+                nextTypeMapping = new TypeMapping(((MapType) currentType).getConstrainedType(),
+                                                  StringUtils.fromString(localPart));
                 return Optional.of(nextTypeMapping);
             case TypeTags.RECORD_TYPE_TAG:
                 RecordType recordType = (RecordType) currentType;
@@ -273,8 +348,9 @@ public class XmlTreeBuilder {
                 // For now, we are using the localPart as the jsonName.
                 String jsonName = localPart;
                 if (recordType.getFields().containsKey(localPart)) {
-                    nextTypeMapping =
-                            new TypeMapping(recordType.getFields().get(localPart).getFieldType(), localPart, jsonName);
+                    nextTypeMapping = new TypeMapping(recordType.getFields().get(localPart).getFieldType(),
+                                                      StringUtils.fromString(localPart),
+                                                      StringUtils.fromString(jsonName));
                     return Optional.of(nextTypeMapping);
                 } else if (!recordType.isSealed()) {
                     nextTypeMapping = new TypeMapping(recordType.getRestFieldType(), null);
@@ -284,7 +360,7 @@ public class XmlTreeBuilder {
                 }
             case TypeTags.ARRAY_TAG:
                 ArrayType arrayType = (ArrayType) currentType;
-                nextTypeMapping = new TypeMapping(arrayType.getElementType(), localPart);
+                nextTypeMapping = new TypeMapping(arrayType.getElementType(), StringUtils.fromString(localPart));
                 return Optional.of(nextTypeMapping);
             default:
                 return Optional.empty();
@@ -297,26 +373,27 @@ public class XmlTreeBuilder {
     }
 
     private BError createTypeMappingError(Type type, String reason) {
-
         StringBuilder pathBuilder = new StringBuilder();
         for (XmlChunk.XmlStartElement startElement : startElements) {
             pathBuilder.append("/").append(startElement.qName);
         }
-
         String path = pathBuilder.toString();
         if (path.isEmpty()) {
-            path = "//";
+            path = "/";
         }
-        String msg;
+
+        StringBuilder msgBuilder = new StringBuilder();
+        msgBuilder.append("Unexpected type mapping '");
         if (type.getName().isEmpty()) {
-            msg = "Unexpected type mapping `" + type + "' at " + path;
+            msgBuilder.append(type);
         } else {
-            msg = "Unexpected type mapping '" + type.getQualifiedName() + "' at " + path;
+            msgBuilder.append(type.getQualifiedName());
         }
+        msgBuilder.append("' at XML path '").append(path).append("'");
         if (!reason.isEmpty()) {
-            msg = msg + ", " + reason;
+            msgBuilder.append(", ").append(reason);
         }
-        return ErrorCreator.createError(StringUtils.fromString(msg));
+        return ErrorCreator.createError(StringUtils.fromString(msgBuilder.toString()));
     }
 
     /**
@@ -325,8 +402,8 @@ public class XmlTreeBuilder {
     private static class TypeMapping {
 
         Type type;
-        String name;
-        String jsonName;
+        BString name;
+        BString jsonName;
         boolean attribute = false;
 
         // Note : attribute = false means, this is a text node.
@@ -335,13 +412,13 @@ public class XmlTreeBuilder {
         // record { string element; @xmldata:Mapping{ } string attr1; }
         // See this issue. https://github.com/OAI/OpenAPI-Specification/issues/630
 
-        TypeMapping(Type type, String name) {
+        TypeMapping(Type type, BString name) {
             this.type = type;
             this.name = name;
             this.jsonName = name;
         }
 
-        TypeMapping(Type type, String name, String jsonName) {
+        TypeMapping(Type type, BString name, BString jsonName) {
             this.type = type;
             this.name = name;
             this.jsonName = jsonName;

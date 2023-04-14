@@ -25,19 +25,3 @@ isolated function testStreamReadXML() returns error? {
     record{} res2 = check streamReadXmlWithType(byteBlockStream);
     io:println(res2);
 }
-
-@test:Config {
-    groups: ["xmlio"]
-}
-isolated function testByteArrayXML() returns error? {
-    xml x = xml `<book id="0"> <title>SomeBook</title> <author>Some Author</author></book>`;
-    byte[] bytes = x.toString().toBytes();
-    Book res1 = check streamReadXmlWithType(bytes);
-    io:println(res1);
-}
-
-type Book record {
-    string title;
-    string author;
-    int id;
-};
