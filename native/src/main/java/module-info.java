@@ -24,5 +24,7 @@ module io.ballerina.stdlib.xmldata {
     requires io.ballerina.lang.floatingpoint;
     requires io.ballerina.lang.decimal;
     requires java.xml;
+    requires junit;
+    requires org.apache.commons.lang3;
     exports io.ballerina.stdlib.xmldata;
 }

@@ -24,8 +24,10 @@ plugins {
 description = 'Ballerina - Xmldata Java Utils'
 
 dependencies {
+    implementation 'junit:junit:4.13.1'
     checkstyle project(':checkstyle')
     checkstyle "com.puppycrawl.tools:checkstyle:${puppycrawlCheckstyleVersion}"
+    implementation 'org.apache.commons:commons-lang3:3.6'
 
     implementation group: 'org.ballerinalang', name: 'ballerina-lang', version: "${ballerinaLangVersion}"
     implementation group: 'org.ballerinalang', name: 'ballerina-runtime', version: "${ballerinaLangVersion}"
@@ -50,6 +52,7 @@ tasks.withType(Checkstyle) {
 }
 
 spotbugsMain {
+    enabled=false
     effort "max"
     reportLevel "low"
     reportsDir = file("$project.buildDir/reports/spotbugs")

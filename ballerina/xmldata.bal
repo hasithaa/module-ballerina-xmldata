@@ -402,3 +402,26 @@ public isolated function fromXml(xml xmlValue, typedesc<map<anydata>> returnType
 returns returnType|Error = @java:Method {
     'class: "io.ballerina.stdlib.xmldata.MapFromXml"
 } external;
+
+# Parse a json byte array with projection
+#
+# + bytes - Byte array of json
+# + typed - Typedesc to be used for filtering in the projection
+# + return - The given target type representation of the given JSON byte array on success,
+#            else returns an `xmldata:Error`
+public isolated function fromJsonByteArrayWithType(byte[] bytes, typedesc<any> typed = <>)
+        returns typed|Error = @java:Method {
+    'class: "io.ballerina.stdlib.xmldata.json.JsonToJson"
+} external;
+
+# Parse a json byte array with projection
+#
+# + byteStream - Byte array stream of json
+# + typed - Typedesc to be used for filtering in the projection
+# + return - The given target type representation of the given JSON byte array stream on success,
+#            else returns an `xmldata:Error`
+public isolated function fromJsonByteArrayStreamWithType(stream<byte> byteStream, typedesc<any> typed)
+        returns any|Error {
+    byte[] evenNumbers = from var b in byteStream select b;
+    return check fromJsonByteArrayWithType(evenNumbers, typed);
+};
